@@ -33,6 +33,7 @@ warnings.filterwarnings("ignore")
 import gc
 from itertools import islice
 
+import numpy as np
 import pytz
 import torch
 import transformers
@@ -238,11 +239,16 @@ def get_file_datetime(filename: str) -> str:
     return filename[filename.rfind("_") + 1 :].replace(".jsonl", "")
 
 
-def sanitize_model_name(model_name: str) -> str:
+def sanitize_model_name(model_name: str, full_path: bool = False) -> str:
     """
     Given the model name, returns a sanitized version of it.
     """
-    return re.sub(r"[\"<>:/\|\\?\*\[\]]+", "__", model_name)
+    if full_path:
+        return re.sub(r"[\"<>:/\|\\?\*\[\]]+", "__", model_name)
+    else:
+        parts = model_name.split("/")
+        last_two = "/".join(parts[-2:]) if len(parts) > 1 else parts[-1]  # accommondate for models that are in Hugging Face Hub format like lmms-lab/llava-onevision-qwen2-0.5b
+        return re.sub(r"[\"<>:/\|\\?\*\[\]]+", "__", last_two)
 
 
 def sanitize_task_name(task_name: str) -> str:
@@ -263,7 +269,7 @@ def get_results_filenames(filenames: List[str]) -> List[str]:
     """
     Extracts filenames that correspond to aggregated results.
     """
-    return [f for f in filenames if "/results_" in f and ".json" in f]
+    return [f for f in filenames if "results" in f and ".json" in f]
 
 
 def get_sample_results_filenames(filenames: List[str]) -> List[str]:
@@ -588,7 +594,14 @@ def get_datetime_str(timezone="Asia/Singapore"):
     tz = pytz.timezone(timezone)
     utc_now = datetime.datetime.now(datetime.timezone.utc)
     local_time = utc_now.astimezone(tz)
-    return local_time.strftime("%m%d_%H%M")
+    return local_time.strftime("%Y%m%d_%H%M%S")
+    return local_time.strftime("%Y%m%d_%H%M%S")
+
+
+def sanitize_long_string(s, max_length=40):
+    if len(s) > max_length:
+        return s[: max_length // 2] + "..." + s[-max_length // 2 :]
+    return s
 
 
 def ignore_constructor(loader, node):
@@ -628,6 +641,7 @@ def load_yaml_config(yaml_path=None, yaml_config=None, yaml_dir=None, mode="full
         yaml_dir = os.path.dirname(yaml_path)
 
     assert yaml_dir is not None
+    assert yaml_config is not None
 
     if "include" in yaml_config:
         include_path = yaml_config["include"]
