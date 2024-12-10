@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from glob import glob
 from typing import (
     Any,
@@ -59,6 +60,7 @@ ALL_OUTPUT_TYPES = [
     "loglikelihood",
     "multiple_choice",
     "generate_until",
+    "generate_until_multi_round",
 ]
 
 
@@ -130,9 +132,9 @@ class TaskConfig(dict):
                 raise ValueError("Got both a `group` and `tag` entry within a TaskConfig. Please use one or the other--`group` values will be deprecated in v0.4.4.")
 
         if self.generation_kwargs is not None:
-            if self.output_type != "generate_until":
+            if "generate_until" not in self.output_type:
                 eval_logger.warning(f"[{self.task}] passed `generation_kwargs`, but not using `output_type: generate_until`!")
-                assert self.output_type != "generate_until"
+                assert "generate_until" not in self.output_type
 
             if "temperature" in self.generation_kwargs:
                 self.generation_kwargs["temperature"] = float(self.generation_kwargs["temperature"])
@@ -140,7 +142,7 @@ class TaskConfig(dict):
             if "until" not in self.generation_kwargs:
                 self.generation_kwargs["until"] = [self.fewshot_delimiter]
         else:
-            if self.output_type == "generate_until":
+            if "generate_until" in self.output_type:
                 # ensure that we greedily generate in absence of explicit arguments otherwise
                 self.generation_kwargs = {
                     "until": None if self.fewshot_delimiter is None else [self.fewshot_delimiter],
@@ -788,9 +790,9 @@ class ConfigurableTask(Task):
         if self.lmms_eval_specific_kwargs is not None:
             if self.model_name in self.lmms_eval_specific_kwargs:
                 self.lmms_eval_specific_kwargs = self.lmms_eval_specific_kwargs[self.model_name]
-            if "default" in self.lmms_eval_specific_kwargs:
+            elif "default" in self.lmms_eval_specific_kwargs:
                 self.lmms_eval_specific_kwargs.update(self.lmms_eval_specific_kwargs.get("default", {}))
-            if "dataset" in self.lmms_eval_specific_kwargs:
+            elif "dataset" in self.lmms_eval_specific_kwargs:
                 self.lmms_eval_specific_kwargs.update(self.lmms_eval_specific_kwargs.get("dataset", {}))
 
         self.model_specific_target_kwargs = self.config.model_specific_target_kwargs
@@ -889,6 +891,7 @@ class ConfigurableTask(Task):
                 accelerator = Accelerator()
                 if accelerator.is_main_process:
                     dataset_kwargs.pop("From_YouTube")
+                    assert "load_from_disk" not in dataset_kwargs, "load_from_disk must not be True when From_YouTube is True"
                     self.all_dataset = datasets.load_dataset(
                         path=self.DATASET_PATH,
                         name=self.DATASET_NAME,
@@ -935,7 +938,9 @@ class ConfigurableTask(Task):
                 if accelerator.is_main_process:
                     force_download = dataset_kwargs.get("force_download", False)
                     force_unzip = dataset_kwargs.get("force_unzip", False)
-                    cache_path = snapshot_download(repo_id=self.DATASET_PATH, repo_type="dataset", force_download=force_download, etag_timeout=60)
+                    revision = dataset_kwargs.get("revision", "main")
+                    create_link = dataset_kwargs.get("create_link", False)
+                    cache_path = snapshot_download(repo_id=self.DATASET_PATH, revision=revision, repo_type="dataset", force_download=force_download, etag_timeout=60)
                     zip_files = glob(os.path.join(cache_path, "**/*.zip"), recursive=True)
                     tar_files = glob(os.path.join(cache_path, "**/*.tar*"), recursive=True)
 
@@ -998,6 +1003,16 @@ class ConfigurableTask(Task):
                             if not os.path.exists(os.path.join(cache_dir, os.path.basename(base_name))):
                                 untar_video_data(output_tar)
 
+                    # Link cache_path to cache_dir if needed.
+                    if create_link:
+                        if not os.path.exists(cache_dir) or os.path.islink(cache_dir):
+                            if os.path.islink(cache_dir):
+                                os.remove(cache_dir)
+                                eval_logger.info(f"Removed existing symbolic link: {cache_dir}")
+                            # Create a new symbolic link
+                            os.symlink(cache_path, cache_dir)
+                            eval_logger.info(f"Symbolic link created successfully: {cache_path} -> {cache_dir}")
+
                 accelerator.wait_for_everyone()
                 dataset_kwargs.pop("cache_dir")
                 dataset_kwargs.pop("video")
@@ -1016,13 +1031,23 @@ class ConfigurableTask(Task):
             if "local_files_only" in dataset_kwargs:
                 dataset_kwargs.pop("local_files_only")
 
-        self.dataset = datasets.load_dataset(
-            path=self.DATASET_PATH,
-            name=self.DATASET_NAME,
-            download_mode=datasets.DownloadMode.REUSE_DATASET_IF_EXISTS,
-            download_config=download_config,
-            **dataset_kwargs if dataset_kwargs is not None else {},
-        )
+            if "create_link" in dataset_kwargs:
+                dataset_kwargs.pop("create_link")
+
+        if dataset_kwargs is not None and "load_from_disk" in dataset_kwargs and dataset_kwargs["load_from_disk"]:
+            dataset_kwargs.pop("load_from_disk")
+            # using local task in offline environment, need to process the online dataset into local format via
+            # `ds = load_datasets("lmms-lab/MMMU")`
+            self.dataset = datasets.load_from_disk(path=self.DATASET_PATH, name=self.DATASET_NAME)
+        else:
+            self.dataset = datasets.load_dataset(
+                path=self.DATASET_PATH,
+                name=self.DATASET_NAME,
+                download_mode=datasets.DownloadMode.REUSE_DATASET_IF_EXISTS,
+                download_config=download_config,
+                **dataset_kwargs if dataset_kwargs is not None else {},
+            )
+
         if self.config.process_docs is not None:
             for split in self.dataset:
                 if split in [self.config.training_split, self.config.validation_split, self.config.test_split, self.config.fewshot_split]:
@@ -1379,6 +1404,8 @@ class ConfigurableTask(Task):
 
         elif self.OUTPUT_TYPE == "generate_until":
             arguments = (ctx, copy.deepcopy(self.config.generation_kwargs), self.doc_to_visual, doc_id, self.config.task, split)
+        elif self.OUTPUT_TYPE == "generate_until_multi_round":
+            arguments = (ctx, copy.deepcopy(self.config.generation_kwargs), self.doc_to_visual, partial(self.config.doc_to_text, lmms_eval_specific_kwargs=self.lmms_eval_specific_kwargs), doc_id, self.config.task, split)
         return Instance(request_type=self.OUTPUT_TYPE, arguments=arguments, idx=0, **kwargs)
 
     # TODO: we add a full_docs interface here for some evaluations that needs to access the full datasets during process_results function. we may have better ways to handle this.
@@ -1417,8 +1444,12 @@ class ConfigurableTask(Task):
                 # and this stores our "regular" conditional loglikelihoods
                 lls = lls[::2]
 
-            pred = np.argmax(lls)
-            pred_norm = np.argmax(lls / completion_len)
+            # Warning :
+            # Here may be different from original lm-eval
+            # since we return the actual loss in many model loglikelihood
+            # we just use the argmin here
+            pred = np.argmin(lls)
+            pred_norm = np.argmin(lls / completion_len)
 
             if self.multiple_input:
                 gold = self.doc_to_text(doc)
@@ -1465,7 +1496,7 @@ class ConfigurableTask(Task):
                 acc_mutual_info = 1.0 if np.argmax(lls_mutual_info) == gold else 0.0
                 result_dict["acc_mutual_info"] = acc_mutual_info
 
-        elif self.OUTPUT_TYPE == "generate_until":
+        elif "generate_until" in self.OUTPUT_TYPE:
             gold = self.doc_to_target(doc)
             result = results[0]
             if self.config.doc_to_choice is not None:
@@ -1481,7 +1512,7 @@ class ConfigurableTask(Task):
                 gold = type(result)(gold)
 
             for metric in self._metric_fn_list.keys():
-                if self.multiple_target:
+                if self.multiple_target and metric != "anls":
                     # in the case where we have multiple targets,
                     # return true if any are true
                     # TODO: this may break for multipLe_target, non zero-or-1 metrics
@@ -1508,9 +1539,11 @@ class ConfigurableTask(Task):
                     else:
                         result_score = 0.0
                 else:
+                    if not isinstance(gold, list):
+                        gold = [gold]
                     try:
                         result_score = self._metric_fn_list[metric](
-                            references=[gold],
+                            references=gold,
                             predictions=[result],
                             **self._metric_fn_kwargs[metric],
                         )
@@ -1523,7 +1556,7 @@ class ConfigurableTask(Task):
         else:
             raise ValueError(
                 f"Passed invalid output_type '{self.OUTPUT_TYPE}' ! Please use one of ",
-                "'loglikelihood','generate_until' or 'multiple_choice'",
+                "'loglikelihood','generate_until', 'generate_until_multi_round', or 'multiple_choice'",
             )
 
         return result_dict

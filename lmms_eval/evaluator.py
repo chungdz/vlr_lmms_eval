@@ -76,6 +76,7 @@ def simple_evaluate(
     numpy_random_seed: int = 1234,
     torch_random_seed: int = 1234,
     fewshot_random_seed: int = 1234,
+    datetime_str: str = get_datetime_str(),
     cli_args=None,
 ):
     """Instantiate and evaluate a model on a list of tasks.
@@ -164,6 +165,11 @@ def simple_evaluate(
     if model_args is None:
         model_args = ""
 
+    if task_manager is None:
+        task_manager = TaskManager(verbosity, model_name=model)
+
+    task_dict = get_task_dict(tasks, task_manager)
+
     ModelClass = get_model(model)
     lm = ModelClass.create_from_arg_string(
         model_args,
@@ -172,11 +178,6 @@ def simple_evaluate(
             "device": device,
         },
     )
-
-    if task_manager is None:
-        task_manager = TaskManager(verbosity, model_name=model)
-
-    task_dict = get_task_dict(tasks, task_manager)
 
     # helper function to recursively apply config overrides to leaf subtasks, skipping their constituent groups.
     # (setting of num_fewshot ; bypassing metric calculation ; setting fewshot seed)
@@ -196,7 +197,7 @@ def simple_evaluate(
                     if task_obj is None:
                         continue
                 lm.task_dict[task_name] = task_obj.dataset
-                if task_obj.get_config("output_type") == "generate_until":
+                if "generate_until" in task_obj.get_config("output_type"):
                     if gen_kwargs is not None:
                         task_obj.set_config(key="generation_kwargs", value=gen_kwargs, update=True)
 
@@ -292,7 +293,7 @@ def simple_evaluate(
             }
         )
         results["git_hash"] = get_git_commit_hash()
-        results["date"] = get_datetime_str()
+        results["date"] = datetime_str
         # add_env_info(results)  # additional environment info to results
         # add_tokenizer_info(results, lm)  # additional info about tokenizer
         return results
@@ -491,7 +492,15 @@ def evaluate(
                 metrics = task.process_results(doc, [req.filtered_resps[filter_key] for req in requests])
                 if log_samples:
                     target = task.doc_to_target(doc)
-                    saved_doc = {key: value for key, value in doc.items() if "image" not in key}
+                    saved_doc = {}
+                    for key, value in doc.items():
+                        # If image is not in key
+                        if "image" not in key:
+                            # If audio is also not the value
+                            if isinstance(value, dict) and "array" in value:
+                                continue
+                            else:
+                                saved_doc[key] = value
                     filtered_arguments = []
                     for req in requests:
                         # check if req.args is a list of tuples, and each item in the list is a serializable object
