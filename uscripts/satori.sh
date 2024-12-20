@@ -1,0 +1,1 @@
+conda activate lmms-eval
