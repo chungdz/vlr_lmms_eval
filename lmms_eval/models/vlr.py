@@ -196,7 +196,8 @@ class VLR(lmms):
             "mme": {"path": "mme_results.json"},
             "mmmu_val": {"path": "mmmu_results.json", "item_id": "id"},
             "seedbench_2_plus": {"path": "seedbench2plus_results.json", "item_id": "question_id"},
-            "vqav2_val": {"path": "vqav2_results.json", "item_id": "question_id"}
+            "vqav2_val": {"path": "vqav2_results.json", "item_id": "question_id"},
+            "vqav2_val_lite": {"path": "vqav2_results.json", "item_id": "question_id"}
         }
 
         self.result_dicts = {}
