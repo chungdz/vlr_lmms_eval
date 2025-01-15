@@ -102,3 +102,14 @@ accelerate launch --num_processes=4 \
 --log_samples \
 --log_samples_suffix llava_onevision \
 --output_path ./logs/
+
+python3 -m accelerate.commands.launch \
+    --num_processes=1 \
+    -m lmms_eval \
+    --model llava \
+    --model_args pretrained="liuhaotian/llava-v1.6-34b,conv_template=mistral_direct" \
+    --tasks realworldqa \
+    --batch_size 1 \
+    --log_samples \
+    --log_samples_suffix llava_v1.5_mme_mmbenchen \
+    --output_path ./logs/
