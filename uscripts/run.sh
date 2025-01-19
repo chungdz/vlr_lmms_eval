@@ -103,7 +103,7 @@ accelerate launch --num_processes=4 \
 --log_samples_suffix llava_onevision \
 --output_path ./logs/
 
-python3 -m accelerate.commands.launch \
+accelerate launch \
     --num_processes=1 \
     -m lmms_eval \
     --model llava \
@@ -113,3 +113,35 @@ python3 -m accelerate.commands.launch \
     --log_samples \
     --log_samples_suffix llava_v1.5_mme_mmbenchen \
     --output_path ./logs/
+
+# Evaluating Llama-3-LLaVA-NeXT-8B on multiple datasets
+accelerate launch --num_processes=8 \
+  -m lmms_eval \
+  --model llava \
+  --model_args pretrained=lmms-lab/llama3-llava-next-8b,conv_template=llava_llama_3 \
+  --tasks ai2d,chartqa,docvqa_val,mme,mmbench_en_dev \
+  --batch_size 1 \
+  --log_samples \
+  --log_samples_suffix llava_next \
+  --output_path ./logs/
+
+# Evaluating LLaVA-NeXT-72B on multiple datasets
+accelerate launch --num_processes=1 \
+  -m lmms_eval \
+  --model llava \
+  --model_args pretrained=lmms-lab/llava-next-72b,conv_template=qwen_1_5,model_name=llava_qwen,device_map=auto \
+  --tasks ai2d,chartqa,docvqa_val,mme,mmbench_en_dev \
+  --batch_size 1 \
+  --log_samples \
+  --log_samples_suffix llava_next \
+  --output_path ./logs/
+
+accelerate launch --num_processes=1 \
+  -m lmms_eval \
+  --model llava \
+  --model_args pretrained=lmms-lab/llava-next-qwen-32b,conv_template=qwen_1_5,model_name=llava_qwen,device_map=auto \
+  --tasks gqa \
+  --batch_size 1 \
+  --log_samples \
+  --log_samples_suffix llava_next \
+  --output_path ./logs/
